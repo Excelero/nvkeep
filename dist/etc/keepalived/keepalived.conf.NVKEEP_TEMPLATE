@@ -1,0 +1,63 @@
+# nvkeep configuration file for keepalived.
+#
+# Requires keepalived v1.3.6 or higher for fifo support.
+# Default location: /etc/keepalived/keepalived.conf
+#
+# Note on vrrp_instance names: The fifo event handler removes the prefix "nvkeep_inst" and uses
+# the remainder to load the correct configuration for this service.
+
+
+# For services that run preferably on HOST_A
+vrrp_instance nvkeep_inst_HOST_A
+{
+    virtual_router_id HOST_A_ROUTERID # to differentiate multiple instances of vrrpd running on the
+                                      # same NIC (valid range 1..255)
+    priority HOST_A_SERVICE_PRIO      # priority for becoming the master
+    interface STATIC_INTERFACE        # the primary interface to use for HA peer heartbeats
+    unicast_src_ip STATIC_IPADDR      # IP address of this host's interface for HA peer heartbeats
+    unicast_peer {
+        STATIC_PEER_IPADDR            # IP address of this hosts's peer for HA heartbeats
+    }
+
+    track_script {
+        nvkeep_checknet_script
+    }
+
+    state BACKUP                  # start in backup state (to prevent both peers starting in master mode)
+    advert_int 2                  # status advertise interval in seconds
+}
+
+# For services that run preferably on HOST_B
+vrrp_instance nvkeep_inst_HOST_B
+{
+    virtual_router_id HOST_B_ROUTERID # to differentiate multiple instances of vrrpd running on the
+                                      # same NIC (valid range 1..255)
+    priority HOST_B_SERVICE_PRIO      # priority for becoming the master
+    interface STATIC_INTERFACE        # the primary interface to use for HA peer heartbeats
+    unicast_src_ip STATIC_IPADDR      # IP address of this host's interface for HA peer heartbeats
+    unicast_peer {
+        STATIC_PEER_IPADDR            # IP address of this hosts's peer for HA heartbeats
+    }
+
+    track_script {
+        nvkeep_checknet_script
+    }
+
+    state BACKUP                  # start in backup state (to prevent both peers starting in master mode)
+    advert_int 2                  # status advertise interval in seconds
+}
+
+global_defs
+{
+    vrrp_notify_fifo /var/nvkeep/vrrp_notify_fifo
+    vrrp_notify_fifo_script /usr/libexec/nvkeep/vrrp_notify_fifo
+}
+
+vrrp_script nvkeep_checknet_script
+{
+    script    "/usr/libexec/nvkeep/check_connectivity"
+    interval  2  # check script result every 2 sec
+    fall      5  # require 5 failures for FAULT
+    rise      5  # require 5 successes for OK
+    init_fail    # initially assume fault state
+}

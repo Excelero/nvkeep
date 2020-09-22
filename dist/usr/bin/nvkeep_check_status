@@ -1,0 +1,101 @@
+#!/bin/bash
+#
+# Check status of services on localhost.
+
+SHARED_LIB_PATH="/usr/libexec/nvkeep/shared_lib"
+
+PEER_SERVICES_CHECK=1 # set to 0 via user argument
+
+EXIT_CODE=0 # In case error should be returned at the end, but not by aborting immediately
+
+# Print usage info and exit
+usage()
+{
+	echo "Nvkeep Service Status Check."
+	echo
+	echo "About: Checks which nvkeep services are currently running on localhost. Exit"
+	echo "code will be 0 (success) if all services that belong to this host are up and"
+	echo "running, otherwise exit code will be 1 (error)."
+	echo
+	echo "Optional Arguments:"
+	echo "  -l    Check localhost preferred services only, not peer host preferred"
+	echo "        services."
+	echo
+	echo "Usage:"
+	echo "  $ $0"
+	echo
+
+	exit 1
+}
+
+# Parse command line arguments and set defaults
+parse_args()
+{
+	local OPTIND # local to prevent effects from other subscripts
+
+	while getopts ":hl" opt; do
+		case "${opt}" in
+		h)
+			# User requested help
+			usage
+			;;
+		l)
+			# No peer host services check on localhost
+			PEER_SERVICES_CHECK=0
+			;;
+		*)
+			# Other option arguments are invalid
+			usage
+			;;
+		esac
+	done
+
+	shift $((OPTIND-1))
+}
+
+parse_args "$@"
+
+echo "Nvkeep Service Status Check"
+echo
+
+# Load shared lib
+. "$SHARED_LIB_PATH"
+
+if [ $? -ne 0 ]; then
+	echo "ERROR: Failed to load shared library. Aborting. Shared lib path: $SHARED_LIB_PATH" >&2
+	exit 1;
+fi
+
+# Load config
+
+load_config
+set_config_by_host_suffix "$(get_localhost_config_suffix)"
+
+echo "Checking services that preferably run on localhost..."
+echo
+
+check_volumes || EXIT_CODE=1
+check_filesystems || EXIT_CODE=1
+check_floating_ips || EXIT_CODE=1
+check_services || EXIT_CODE=1
+
+if [ "$PEER_SERVICES_CHECK" = "1" ]; then
+	set_config_by_host_suffix "$(get_peer_config_suffix)"
+
+	echo
+	echo "Checking peer host services on localhost..."
+	echo
+
+	check_volumes
+	check_filesystems
+	check_floating_ips
+	check_services
+fi
+
+echo
+echo "Checking keepalived status on localhost..."
+echo
+
+check_keepalived_service || EXIT_CODE=1
+
+exit $EXIT_CODE

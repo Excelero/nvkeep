@@ -1,0 +1,61 @@
+#!/bin/bash
+#
+# This script will be called by keepalived when we are entering master state based on connectivity
+# check.
+#
+# $1: Host suffix for set_config_by_host_suffix(), e.g. "_HOST_A"
+
+HOST_SUFFIX="$1"
+SHARED_LIB_PATH="/usr/libexec/nvkeep/shared_lib"
+FAULT_SCRIPT_PATH="/usr/libexec/nvkeep/notify_fault"
+LOGFILE=/var/log/nvkeep/actions.log
+
+EXIT_CODE=0 # In case error should be returned at the end, but not by aborting immediately
+
+{
+	# Log start date
+	echo "$(date): START: $0 $@" 
+
+	# Load shared lib
+	. "$SHARED_LIB_PATH"
+
+	if [ $? -ne 0 ]; then
+		echo "ERROR: Failed to load shared library. Aborting. Shared lib path: $SHARED_LIB_PATH" >&2
+		exit 1;
+	fi
+
+	# Load config
+	load_config
+
+	# Note: We're not setting the config for localhost here, instead we need to use the
+	# suffix from the vrrp instance that keepalived told us about, e.g. in case we're on
+	# HOST_A and now should take over the services from HOST_B
+	set_config_by_host_suffix "$HOST_SUFFIX"
+
+	# Cleanup any leftovers from previous state... 
+	# (e.g. if user stopped keepalived, so that we had no correct cleanup)
+	echo "$(date): Calling fault script to cleanup any leftovers from previous master state..."
+	
+	"$FAULT_SCRIPT_PATH" $1
+	
+	echo "$(date): Attaching nvmesh volumes in exclusive mode..."
+	
+	attach_volumes
+	
+	echo "$(date): Mounting file systems..."
+
+	mount_filesystems
+	
+	echo "$(date): Adding floating IP addresses..."
+
+	add_floating_ips
+
+	echo "$(date): Starting services..."
+	
+	start_services || EXIT_CODE=1
+
+	# Log end date
+	echo "$(date): END: $0 $@"
+} >> $LOGFILE 2>&1
+
+exit $EXIT_CODE

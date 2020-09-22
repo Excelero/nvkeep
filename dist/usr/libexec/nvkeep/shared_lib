@@ -1,0 +1,341 @@
+#!/bin/bash
+#
+# Shared library of functions for nvkeep.
+# Requires config to be loaded by caller.
+
+DEFAULT_CONF_PATH="/etc/nvkeep/nvkeep_service.conf"
+
+# Load config file
+load_config()
+{
+	. "$DEFAULT_CONF_PATH"
+	
+	if [ $? -ne 0 ]; then
+		echo "ERROR: Unable to load config file: $DEFAULT_CONF_PATH" >&2
+		
+		exit 1
+	fi
+}
+
+# Load local values from nvkeep_service.conf without _HOST_{A,B} suffix based on given suffix.
+# 
+# $1: suffix for variables to load, e.g. "_HOST_A".
+set_config_by_host_suffix()
+{
+	local SUFFIX="$1"
+	
+	if [ -z "$SUFFIX" ]; then
+		echo "ERROR: set_config_by_host_suffix called without suffix." >&2
+		exit 1
+	fi
+	
+	local NORMAL_VARS=(HOSTNAME STATIC_INTERFACE STATIC_IPADDR)
+	local ARRAY_VARS=(FLOATING_INTERFACES FLOATING_IPADDRS NVMESHVOLS MOUNTPOINTS SERVICES PINGHOSTS)
+
+	# example: if NORMAL_VARS[i]="STATIC_IPADDR" and SUFFIX="_HOST_A", then we do...
+	# STATIC_IPADDR=$STATIC_IPADDR_HOST_A
+	# ...so we load the variable without suffix.
+
+	for (( i=0; i < ${#NORMAL_VARS[@]}; i++ )); do
+		eval "$(echo ${NORMAL_VARS[$i]}=\$${NORMAL_VARS[$i]}${SUFFIX})"
+	done
+	
+	# same as above, only slightly more complicated looking to preserve the arrays
+	
+	for (( i=0; i < ${#ARRAY_VARS[@]}; i++ )); do
+		eval "$(echo ${ARRAY_VARS[$i]}=\(\"\$\{${ARRAY_VARS[$i]}${SUFFIX}[@]\}\"\) )"
+	done
+}
+
+# Find config suffix of localhost, e.g. "_HOST_A"
+get_localhost_config_suffix()
+{
+	local HOST_SUFFIX=""
+	local SHORT_HOSTNAME="$(hostname -s)"
+
+	if [ $? -ne 0 ]; then
+		echo "ERROR: Failed to get short hostname via \"hostname -s\"." >&2
+		exit 1
+	fi
+
+	if [ "$HOSTNAME_HOST_A" = "$SHORT_HOSTNAME" ]; then
+		HOST_SUFFIX="_HOST_A"
+	elif [ "$HOSTNAME_HOST_B" = "$SHORT_HOSTNAME" ]; then
+		HOST_SUFFIX="_HOST_B"
+	else
+		echo "ERROR: Hostname from \"hostname -s\" ($SHORT_HOSTNAME) does not match HOSTNAME_HOST_A" \
+			"($HOSTNAME_HOST_A) or HOSTNAME_HOST_B ($HOSTNAME_HOST_B)." >&2
+		exit 1
+	fi
+
+	echo "$HOST_SUFFIX"
+}
+
+# Find config suffix of peer, e.g. "_HOST_B" if this is HOST_A
+get_peer_config_suffix()
+{
+	local HOST_SUFFIX=""
+	local SHORT_HOSTNAME="$(hostname -s)"
+
+	if [ $? -ne 0 ]; then
+		echo "ERROR: Failed to get short hostname via \"hostname -s\"." >&2
+		exit 1
+	fi
+
+	if [ "$HOSTNAME_HOST_A" = "$SHORT_HOSTNAME" ]; then
+		HOST_SUFFIX="_HOST_B"
+	elif [ "$HOSTNAME_HOST_B" = "$SHORT_HOSTNAME" ]; then
+		HOST_SUFFIX="_HOST_A"
+	else
+		echo "ERROR: Hostname from \"hostname -s\" ($SHORT_HOSTNAME) does not match HOSTNAME_HOST_A " \
+			"($HOSTNAME_HOST_A) or HOSTNAME_HOST_B ($HOSTNAME_HOST_B)." >&2
+		exit 1
+	fi
+
+	echo "$HOST_SUFFIX"
+}
+
+# Return: 0 if all volumes attached, 1 if not
+check_volumes()
+{
+	local RETVAL=0
+
+	EXISTING_VOLS=($(find /proc/nvmeibc/volumes/ -mindepth 1 -maxdepth 1 -type d -printf '%f\n') )
+
+	for (( i=0; i < ${#NVMESHVOLS[@]}; i++ )); do
+		IS_ATTACHED="$(echo "${EXISTING_VOLS[@]}" | grep ${NVMESHVOLS[$i]})"
+		IS_ENABLED="$(grep 'IO is currently enabled' /proc/nvmeibc/volumes/${NVMESHVOLS[$i]}/status 2>/dev/null)"
+		
+		if [ -n "$IS_ENABLED" ]; then
+			echo "[OK] VOLUME: ${NVMESHVOLS[$i]}"
+		elif [ -n "$IS_ATTACHED" ]; then
+			echo "[NOT OK, disabled] VOLUME: ${NVMESHVOLS[$i]}"
+			RETVAL=1
+		else
+			echo "[NOT OK, detached] VOLUME: ${NVMESHVOLS[$i]}"
+			RETVAL=1
+		fi
+	done
+
+	return $RETVAL
+}
+
+attach_volumes()
+{
+	if [ ${#NVMESHVOLS[@]} -eq 0 ]; then
+		return 0 # nothing to do
+	fi
+
+	nvmesh_attach_volumes -w --preempt --access EXCLUSIVE_READ_WRITE ${NVMESHVOLS[@]}
+
+	if [ $? -ne 0 ]; then
+		echo "$(date): Volume attachment failed. Aborting." >&2
+		exit 1;
+	fi
+}
+
+# Return: 0 if detaching succeeded, 1 if not
+detach_volumes()
+{
+	local RETVAL=0
+	local NVMESHVOLS_ATTACHED=()
+
+	# Filter to only attached volumes, as otherwise nvmesh_detach_volumes will print a warning
+	# when trying to detach a volume that is not attached.
+	for (( i=0; i < ${#NVMESHVOLS[@]}; i++ )); do
+		if [ -e "/proc/nvmeibc/volumes/${NVMESHVOLS[$i]}" ]; then
+			NVMESHVOLS_ATTACHED+=("${NVMESHVOLS[$i]}")
+		fi
+	done
+
+	if [ ${#NVMESHVOLS_ATTACHED[@]} -eq 0 ]; then
+		return 0 # nothing to do
+	fi
+
+	if ! nvmesh_detach_volumes --force ${NVMESHVOLS_ATTACHED[@]}; then
+		echo "$(date): Detaching volumes failed: ${NVMESHVOLS_ATTACHED[@]}" >&2
+		exit 1;
+	fi
+
+	return $RETVAL
+}
+
+# Return: 0 if all mountpoints found, 1 if not
+check_filesystems()
+{
+	local RETVAL=0
+
+	for (( i=0; i < ${#MOUNTPOINTS[@]}; i++ )); do
+		if findmnt --noheadings ${MOUNTPOINTS[$i]} >/dev/null; then
+			echo "[OK] MOUNTPOINT: ${MOUNTPOINTS[$i]}"
+		else
+			echo "[NOT OK] MOUNTPOINT: ${MOUNTPOINTS[$i]}"
+			RETVAL=1
+		fi
+	done
+
+	return $RETVAL
+}
+
+mount_filesystems()
+{	
+	for (( i=0; i < ${#MOUNTPOINTS[@]}; i++ )); do
+		echo "$(date): Mounting ${MOUNTPOINTS[$i]}..."
+		
+		eval "$MOUNT_CMD ${MOUNTPOINTS[$i]}"
+
+		if [ $? -ne 0 ]; then
+			echo "$(date): Mount command failed. Aborting." >&2
+			exit 1;
+		fi
+	done
+}
+
+# Return: 0 if all umounts successful, 1 if not
+umount_filesystems()
+{
+	local RETVAL=0
+
+	for (( i=0; i < ${#MOUNTPOINTS[@]}; i++ )); do
+		if findmnt ${MOUNTPOINTS[$i]}; then
+			echo "$(date): Unmounting ${MOUNTPOINTS[$i]}..."
+			
+			eval "$UMOUNT_CMD ${MOUNTPOINTS[$i]}"
+			
+			if [ $? -ne 0 ]; then
+				echo "$(date): Unmounting failed: ${MOUNTPOINTS[$i]}" \
+				RETVAL=1
+			fi
+		fi
+	done
+
+	return $RETVAL
+}
+
+# Return: 0 if all floating IPs assigned to the right interfaces, 1 if not
+check_floating_ips()
+{
+	local RETVAL=0
+
+	for (( i=0; i < ${#FLOATING_INTERFACES[@]}; i++ )); do
+		if ip -br a | grep "${FLOATING_INTERFACES[$i]}.*${FLOATING_IPADDRS[$i]}" >/dev/null; then
+			echo "[OK] FLOATING IP: ${FLOATING_INTERFACES[$i]} ${FLOATING_IPADDRS[$i]}"
+		else
+			echo "[NOT OK] FLOATING IP: ${FLOATING_INTERFACES[$i]} ${FLOATING_IPADDRS[$i]}"
+			RETVAL=1
+		fi
+	done
+
+	return $RETVAL
+}
+
+add_floating_ips()
+{
+	for (( i=0; i < ${#FLOATING_INTERFACES[@]}; i++ )); do
+		if ! ip -br a | grep "${FLOATING_INTERFACES[$i]}.*${FLOATING_IPADDRS[$i]}" >/dev/null; then
+			# IP addr is not set yet, try to add it
+			ip addr add ${FLOATING_IPADDRS[$i]} dev ${FLOATING_INTERFACES[$i]}
+
+			if [ $? -ne 0 ]; then
+				echo "$(date): Adding floating IP address failed. Aborting." \
+					"(Index: $i / IP: ${FLOATING_IPADDRS[$i]} /" \ 
+					"Interface: ${FLOATING_INTERFACES[$i]})" >&2
+				exit 1;
+			fi
+		fi
+	done
+}
+
+# Return: 0 if all floating IPs could be deleted, 1 if not
+del_floating_ips()
+{
+	local RETVAL=0
+
+	for (( i=0; i < ${#FLOATING_INTERFACES[@]}; i++ )); do
+		if ip -br a | grep "${FLOATING_INTERFACES[$i]}.*${FLOATING_IPADDRS[$i]}" >/dev/null; then
+			# IP addr is set, try to delete it
+			ip addr del ${FLOATING_IPADDRS[$i]} dev ${FLOATING_INTERFACES[$i]} 2>/dev/null
+			
+			if [ $? -ne 0 ]; then
+				echo "$(date): Removing floating IP address failed:" \
+					"${FLOATING_INTERFACES[$i]} ${FLOATING_IPADDRS[$i]}"
+				RETVAL=1
+			fi
+		fi
+	done
+
+	return $RETVAL
+}
+
+# Return: 0 if all services are up, 1 if not
+check_services()
+{
+	local RETVAL=0
+
+	for (( i=0; i < ${#SERVICES[@]}; i++ )); do
+		if systemctl is-active "${SERVICES[$i]}" >/dev/null; then
+			echo "[OK] SERVICE: ${SERVICES[$i]}"
+		else
+			echo "[NOT OK] SERVICE: ${SERVICES[$i]}"
+			RETVAL=1
+		fi
+	done
+
+	return $RETVAL
+}
+
+# Return: 0 if keepalived service is up, 1 if not
+check_keepalived_service()
+{
+	local RETVAL=0
+	local KEEPALIVED_SERVICE_NAME="keepalived"
+
+	if systemctl is-active "$KEEPALIVED_SERVICE_NAME" >/dev/null; then
+		echo "[OK] SERVICE: $KEEPALIVED_SERVICE_NAME"
+	else
+		echo "[NOT OK] SERVICE: $KEEPALIVED_SERVICE_NAME"
+		RETVAL=1
+	fi
+
+	return $RETVAL
+}
+
+# Return: 0 if all services started successfully, 1 if not
+start_services()
+{
+	local RETVAL=0
+
+	for (( i=0; i < ${#SERVICES[@]}; i++ )); do
+		echo "$(date): Starting service: ${SERVICES[$i]}"
+		
+		systemctl restart "${SERVICES[$i]}"
+
+		if [ $? -ne 0 ]; then
+			# Probably doesn't help anyone if there are other services to start and we stop after a
+			# failed service start, so we don't abort here on error.
+			echo "$(date): Service start returned error code." >&2
+			RETVAL=1
+		fi
+	done
+	
+	return $RETVAL
+}
+
+# Return: 0 if all services stopped successfully, 1 if not
+stop_services()
+{
+	local RETVAL=0
+	
+	if [ ${#SERVICES[@]} -eq 0 ]; then
+		return 0 # nothing to do
+	fi
+
+	systemctl stop "${SERVICES[@]}"
+	if [ $? -ne 0 ]; then
+		echo "$(date): Service stop returned error code." >&2
+		RETVAL=1
+	fi
+	
+	return $RETVAL
+}
+

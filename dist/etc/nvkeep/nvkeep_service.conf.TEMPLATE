@@ -1,0 +1,65 @@
+# Shared configuration file. (Sourced by other shell scripts.)
+#
+# HOST_A values define the floating IP addresses, volumes, mount points and services that will be
+# owned by HOST_A while all servers are up and running. HOST_A will take over all corresponding
+# definitions for HOST_B when HOST_B fails and vice versa.
+#
+# For active/passive (i.e. HOST_A owns services and HOST_B is only for failover, but does
+# otherwise not own services while HOST_A is up), it's also possible to leave the corresponding
+# HOST_B values empty.
+
+# Hostnames of the failover host pair (as in "hostname -s")
+HOSTNAME_HOST_A=""
+HOSTNAME_HOST_B=""
+
+# Network interfaces for keepalived heartbeats.
+# These interfaces need to have the IPs "STATIC_IPADDR" below statically assigned.
+STATIC_INTERFACE_HOST_A=""
+STATIC_INTERFACE_HOST_B=""
+
+# Static IP addresses for keepalived heartbeats.
+STATIC_IPADDR_HOST_A=""
+STATIC_IPADDR_HOST_B=""
+
+# Array of network interfaces for floating IP addresses.
+# Entries correspond 1:1 to entries in FLOATING_IPADDRS array, so number of entries must be
+# identical to number of entries in FLOATING_IPADDRS.
+FLOATING_INTERFACES_HOST_A=()
+FLOATING_INTERFACES_HOST_B=()
+
+# Array of floating IPs that get moved in case of failover.
+# First IP in array gets assigned to first interface in INTERFACES, 2nd IP to second interface and
+# so on.
+# Format example: "1.2.3.4/24"
+FLOATING_IPADDRS_HOST_A=()
+FLOATING_IPADDRS_HOST_B=()
+
+# Array of NVMesh volume names to attach (without "/dev/nvmesh" prefix).
+NVMESHVOLS_HOST_A=()
+NVMESHVOLS_HOST_B=()
+
+# Array of local file system mountpoints on top of NVMESHVOLS for services.
+# These mountpoints must exist in /etc/nvkeep/fstab.
+MOUNTPOINTS_HOST_A=()
+MOUNTPOINTS_HOST_B=()
+
+# Array of systemd services to keep highly available.
+SERVICES_HOST_A=()
+SERVICES_HOST_B=()
+
+############ Advanced Settings ##############
+####### (Usually no need to modify.) ########
+#############################################
+
+# Array of hosts to ping to check if the host is still connected to the network.
+# If all of the given hosts for HOST_A or HOST_B services are not pingable, then the host will
+# switch to failed state for the corresponding resources, resulting in a stop of the resources
+# on this host.
+PINGHOSTS_HOST_A=()
+PINGHOSTS_HOST_B=()
+
+# Mount command. (Mointpoint will be appended as last argument.)
+MOUNT_CMD="mount --fstab /etc/nvkeep/fstab --target"
+
+# Umount command. (Mointpoint will be appended as last argument.)
+UMOUNT_CMD="umount --force"

@@ -1,0 +1,45 @@
+#!/bin/bash
+#
+# This is called by keepalived to find out if this host is still connected to the network. If not,
+# it will enter "fault" state, resulting in keepalived calling the notify_fault script.
+#
+# Exit value 0 means OK (connected to any of the ping hosts), anything else means fault state.
+
+SHARED_LIB_PATH="/usr/libexec/nvkeep/shared_lib"
+
+
+# Load shared lib
+
+. "$SHARED_LIB_PATH"
+
+if [ $? -ne 0 ]; then
+	echo "ERROR: Failed to load shared library. Aborting. Shared lib path: $SHARED_LIB_PATH" >&2
+	exit 1;
+fi
+
+# Load config
+
+load_config
+set_config_by_host_suffix "$(get_localhost_config_suffix)"
+
+
+# Find out if localhost is still connected to any of the given ping hosts
+
+if [ ${#PINGHOSTS[@]} -eq 0 ]; then
+	exit 0 # No hosts defined, so nothing to do here
+fi
+
+# Ping all given hosts to check if we are still connected.
+# If one of them is pingable then we return "OK", otherwise we assume disconnected state and
+# return "ERROR".
+
+for host in "${PINGHOSTS[@]}"; do
+	ping -c 1 -W 3 $host
+	if [ $? -eq 0 ]; then
+		# Ping to this host was successful, so we are still connected
+		exit 0
+	fi
+done
+
+# None of the pings was successful, so assume disconnected/fault state
+exit 1

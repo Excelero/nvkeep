@@ -1,0 +1,27 @@
+Name:           nvkeep
+Version:        __VERSION__
+Release:        1
+Summary:        NVMesh Keepalive Framework
+License:        GPLv3+
+BuildArch:      noarch
+Requires:       keepalived >= 1.3.6
+
+%description
+Keep linux services alive in case of server failure, based on NVMesh protected
+storage volumes and keepalived.
+
+#%prep
+#%setup
+#%build
+#%install
+
+%clean
+rm -rf %{buildroot}
+
+%files
+/usr/bin/*
+/usr/libexec/*
+/usr/sbin/*
+/etc/*
+/var/log/*
+/var/nvkeep

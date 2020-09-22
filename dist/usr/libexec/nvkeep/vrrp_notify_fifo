@@ -1,0 +1,140 @@
+#!/bin/bash
+#
+# Handle keepalived events through fifo to ensure correct order of events (which would otherwise
+# not be given by notify_{master,backup,fault} scripts, as keepalived calls those concurrently in
+# case of fast state changes.
+# This script is based on the keepalived provided example:
+# https://raw.githubusercontent.com/acassen/keepalived/master/doc/samples/sample_notify_fifo
+#
+# Requires keepalived v1.3.6 or higher for fifo support.
+#
+# $1: Path to fifo (automatically provided by keepalived)
+
+FIFO="$1"
+LOGFILE=/var/log/nvkeep/event_handler.log
+CREATED_FIFO=0 # will become "1" if this script created the fifo (and needs to "rm" it later)
+ACTION_SCRIPTS_PATH="/usr/libexec/nvkeep"
+INSTANCE_NAME_PREFIX="nvkeep_inst" # vrrp_instance name prefix in keepalived.conf
+
+
+stopping()
+{
+	echo "$(date):" Stopping event handler >>$LOGFILE
+}
+
+start_shutdown()
+{
+	# When keepalived terminates, it sends a TERM signal to this script before
+	#  sending the fifo notifies. We catch the SIGTERM here, and after a short
+	#  delay send a SIGALRM to the main script process
+	( sleep 0.5
+	  kill -ALRM $$
+	) &
+}
+
+trap "{ stopping; [[ $CREATED_FIFO -eq 1 ]] && rm -f $FIFO; exit 0; }" HUP INT QUIT USR1 USR2 PIPE ALRM
+trap start_shutdown TERM
+
+# Check FIFO is given as first argument
+if [ -z $FIFO ]; then
+	echo "ERROR: A FIFO name must be specified"
+	exit 1
+fi
+
+# Create fifo if it didn't exist
+if [[ ! -p $FIFO ]]; then
+	mkfifo $FIFO
+	if [[ $? -eq 0 ]]; then
+		CREATED_FIFO=1
+	else
+		echo "ERROR: Unable to create fifo: $FIFO"
+		exit 1
+	fi
+fi
+
+# Process events that come in from keepalived through the FIFO newline-separated.
+#
+# If keepalived terminates, the FIFO will be closed, so read the FIFO in a loop. If keepalived 
+# hasn't opened the FIFO, the script will be blocked until it has been opened.
+while [[ 1 ]]
+do
+	[[ ! -p $FIFO ]] && echo FIFO $FIFO missing && exit 1
+
+	while read line; do
+
+		# Set event details from fifo as $1, $2, ...
+		set $line
+		
+		TYPE=$1
+		
+		if [[ $TYPE = INSTANCE || $TYPE = GROUP ]]; then
+			VRRP_INST=${2//\"/} # note: $2 with quotes removed ( ${string//substring/replacement} )
+			STATE=$3
+			PRIORITY=$4
+
+			echo "$(date):" $TYPE $VRRP_INST $STATE $PRIORITY >>$LOGFILE
+			
+			# Remove vrrp_instance name prefix, so that e.g. "nvkeep_inst_HOST_A" becomes "_HOST_A"
+			HOST_SUFFIX="${VRRP_INST/$INSTANCE_NAME_PREFIX/}"
+
+			if [ -z "$HOST_SUFFIX" ]; then
+				echo "$(date): * ERROR: Host suffix is emtpy. VRRP_INST: $VRRP_INST" >>$LOGFILE
+				continue
+			fi
+			
+			ACTION_RETVAL=0
+			ACTION_CMD=""
+			
+			case $STATE in
+			MASTER)
+				ACTION_CMD="${ACTION_SCRIPTS_PATH}/notify_master ${HOST_SUFFIX}"
+				echo "$(date): * Action: $ACTION_CMD" >>$LOGFILE
+				$ACTION_CMD 
+				ACTION_RETVAL=$?
+				;;
+			BACKUP)
+				ACTION_CMD="${ACTION_SCRIPTS_PATH}/notify_fault ${HOST_SUFFIX}"
+				echo "$(date): * Action: $ACTION_CMD" >>$LOGFILE
+				$ACTION_CMD 
+				ACTION_RETVAL=$?
+				;;
+			FAULT)
+				ACTION_CMD="${ACTION_SCRIPTS_PATH}/notify_fault ${HOST_SUFFIX}"
+				echo "$(date): * Action: $ACTION_CMD" >>$LOGFILE
+				$ACTION_CMD
+				ACTION_RETVAL=$?
+				;;
+			esac
+			
+			if [ ! -z "$ACTION_CMD" ]; then
+				if [ "$ACTION_RETVAL" -eq 0 ]; then
+					echo "$(date): * Action handler return code: success" >>$LOGFILE
+				else
+					echo "$(date): * Action handler return code: ERROR" >>$LOGFILE
+				fi
+			fi
+
+		elif [[ $TYPE = VS ]]; then
+			VS=$2
+			STATE=$3
+
+			echo "$(date):" $TYPE $VS $STATE >>$LOGFILE
+
+			# Nothing to be done here for nvkeep
+		
+		elif [[ $TYPE = RS ]]; then
+			RS=$2
+			VS=$3
+			STATE=$4
+
+			echo "$(date):" $TYPE $RS $VS $STATE >>$LOGFILE
+
+			# Nothing to be done here for nvkeep
+
+		else
+			echo "$(date):" $TYPE - unknown "($*)" >>$LOGFILE
+		fi
+	done < $FIFO
+
+	echo "$(date):" STOPPED >>$LOGFILE
+done

@@ -1,0 +1,399 @@
+#!/bin/bash
+#
+# Apply /etc/nvkeep/nvkeep_service.conf file settings to this host and its failover peer.
+
+CONF_TOOL_PATH="/usr/sbin/nvkeep_apply_config"
+CONF_PATH="/etc/nvkeep/nvkeep_service.conf"
+CONF_TEMPLATE_PATH="${CONF_PATH}.TEMPLATE"
+FSTAB_PATH="/etc/nvkeep/fstab"
+FSTAB_TEMPLATE_PATH="${FSTAB_PATH}.TEMPLATE"
+KEEPALIVED_CONF_PATH="/etc/keepalived/keepalived.conf"
+KEEPALIVED_TEMPLATE_PATH="${KEEPALIVED_CONF_PATH}.NVKEEP_TEMPLATE"
+SHARED_LIB_PATH="/usr/libexec/nvkeep/shared_lib"
+
+# keepalived.conf values
+HOST_A_SERVICE_PRIO="200" # will be changed on HOST_B
+HOST_B_SERVICE_PRIO="100" # will be changed on HOST_B
+HOST_A_ROUTERID="1" # Router ID for HOST_A-owned services
+HOST_B_ROUTERID="2" # Router ID for HOST_B-owned services
+
+#THIS_IS_HOST_B=1 # Will be set if HOST_A calls this script for HOST_B via ssh
+
+
+# Print usage info and exit
+usage()
+{
+	echo "Apply Nvkeep Service Config Tool"
+	echo
+	echo "About: This applies the settings in /etc/nvkeep/nvkeep_service.conf to this"
+	echo "host and its failover peer (via ssh)."
+	echo
+	echo "Usage:"
+	echo "  $ $0"
+	echo
+
+	exit 1
+}
+
+# Parse command line arguments and set defaults
+parse_args()
+{
+	local OPTIND # local to prevent effects from other subscripts
+
+	while getopts ":h" opt; do
+		case "${opt}" in
+		h)
+			# User requested help
+			usage
+			;;
+		*)
+			# Other option arguments are invalid
+			usage
+			;;
+		esac
+	done
+
+	shift $((OPTIND-1))
+}
+
+load_config_file()
+{
+	if [ ! -e "$CONF_PATH" ]; then
+		echo
+		echo "ERROR: Service config file not found."
+		echo
+		echo "Create service config file from template using this command:"
+		echo "$ cp \"$CONF_TEMPLATE_PATH\" \"$CONF_PATH\""
+		echo "Then edit the created config file with your favorite text editor."
+		echo "When you're done with the edits, run this tool again."
+
+		exit 1
+	fi
+	
+	. "$CONF_PATH"
+	
+	if [ $? -ne 0 ]; then
+		echo "ERROR: Unable to load config file: $CONF_PATH"
+	fi
+}
+
+load_shared_lib()
+{
+	if [ ! -e "$SHARED_LIB_PATH" ]; then
+		echo
+		echo "ERROR: Shared lib not found."
+		echo
+		echo "Is nvkeep installed on this host?"
+
+		exit 1
+	fi
+	
+	. "$SHARED_LIB_PATH"
+
+	if [ $? -ne 0 ]; then
+		echo "ERROR: Unable to load shared lib: $SHARED_LIB_PATH"
+	fi
+}
+
+check_config_defined()
+{
+	if [ -z "$HOSTNAME_HOST_A" ]; then
+		echo
+		echo "ERROR: HOSTNAME_HOST_A not defined in config file:"
+		echo "  $CONF_PATH"
+		echo "Edit this config file with your favorite text editor."
+		echo "When you're done with the edits, call this tool again."
+
+		exit 1
+	fi
+
+	if [ -z "$HOSTNAME_HOST_B" ]; then
+		echo
+		echo "ERROR: HOSTNAME_HOST_B not defined in config file:"
+		echo "  $CONF_PATH"
+		echo "Edit this config file with your favorite text editor."
+		echo "When you're done with the edits, call this tool again."
+
+		exit 1
+	fi
+}
+
+# $1: HOSTNAME_HOST_{A,B} to check
+check_this_is_host_xy()
+{
+	local HOSTNAME="$(hostname -s)"
+	local DESIRED_HOSTNAME="$1"
+	
+	if [ "$DESIRED_HOSTNAME" != "$HOSTNAME" ]; then
+		echo
+		echo "ERROR: Configured hostname does not match this host."
+		echo "Use this tool only on HOST_A."
+		echo "HOSTNAME_HOST_A from config file: $HOSTNAME_HOST_A"
+		echo "Hostname of this host from \"hostname -s\": $HOSTNAME"
+		
+		exit 1
+	fi
+}
+
+check_static_ip_defined()
+{
+	if [ -z "$STATIC_IPADDR_HOST_A" ] || [ -z "$STATIC_IPADDR_HOST_B" ] || \
+		[ -z "$STATIC_INTERFACE_HOST_A" ] || [ -z "$STATIC_INTERFACE_HOST_B" ]; then
+		echo
+		echo "ERROR: STATIC_IPADDR or STATIC_INTERFACE for keepalived not defined in config file."
+		
+		exit 1
+	fi
+}
+
+check_fstab_exists()
+{
+	if [ ! -e "$FSTAB_PATH" ]; then
+		echo
+		echo "ERROR: fstab file not found."
+		echo
+		echo "Create fstab file from template using this command:"
+		echo "$ cp \"$FSTAB_TEMPLATE_PATH\" \"$FSTAB_PATH\""
+		echo "Then edit the created config file with your favorite text editor and fill in"
+		echo "all mountpoints for this failover host group."
+		echo "When you're done with the edits, run this tool again."
+
+		exit 1
+	fi
+}
+
+check_fstab_empty()
+{
+	if [ ! -e "$FSTAB_PATH" ]; then
+		echo
+		echo "ERROR: fstab file not found."
+		echo
+		echo "Create fstab file from template using this command:"
+		echo "$ cp \"$FSTAB_TEMPLATE_PATH\" \"$FSTAB_PATH\""
+		echo "Then edit the created config file with your favorite text editor and fill in"
+		echo "all mountpoints for this failover host group."
+		echo "When you're done with the edits, run this tool again."
+
+		exit 1
+	fi
+}
+
+check_fstab_defined()
+{
+	if $(diff "$FSTAB_TEMPLATE_PATH" "$FSTAB_PATH" >/dev/null); then
+		echo
+		echo "WARNING: fstab does not differ from template. Did you forget to fill it?"
+		echo "fstab file: $FSTAB_PATH"
+		echo
+	fi
+}
+
+create_keepalived_conf_from_template()
+{
+	if [ -e "$KEEPALIVED_CONF_PATH" ]; then
+		echo "* Creating keepalived.conf backup..."
+		
+		cp -v "${KEEPALIVED_CONF_PATH}" "${KEEPALIVED_CONF_PATH}.bak"
+
+		if [ $? -ne 0 ]; then
+			echo
+			echo "ERROR: Unable to create keepalived config backup."
+			echo
+			
+			exit 1
+		fi
+	fi
+	
+	cp -v "$KEEPALIVED_TEMPLATE_PATH" "$KEEPALIVED_CONF_PATH"
+	
+	if [ $? -ne 0 ]; then
+		echo
+		echo "ERROR: Unable to copy keepalived template file."
+		echo
+		
+		exit 1
+	fi
+}
+
+# WARNING: This assumes local config to be loaded, loads foreign config and restores local config
+# in the end.
+apply_nvkeep_conf_to_keepalived_conf()
+{
+	sed -i "s/HOST_A_ROUTERID/$HOST_A_ROUTERID/g" "$KEEPALIVED_CONF_PATH"
+	sed -i "s/HOST_B_ROUTERID/$HOST_B_ROUTERID/g" "$KEEPALIVED_CONF_PATH"
+
+	sed -i "s/HOST_A_SERVICE_PRIO/$HOST_A_SERVICE_PRIO/g" "$KEEPALIVED_CONF_PATH"
+	sed -i "s/HOST_B_SERVICE_PRIO/$HOST_B_SERVICE_PRIO/g" "$KEEPALIVED_CONF_PATH"
+
+	sed -i "s/STATIC_INTERFACE/$STATIC_INTERFACE/g" "$KEEPALIVED_CONF_PATH"
+
+	sed -i "s/STATIC_IPADDR/$STATIC_IPADDR/g" "$KEEPALIVED_CONF_PATH"
+	
+	# Loading peer config
+	set_config_by_host_suffix "$(get_peer_config_suffix)"
+	
+	sed -i "s/STATIC_PEER_IPADDR/$STATIC_IPADDR/g" "$KEEPALIVED_CONF_PATH"
+	
+	# Restore local config
+	set_config_by_host_suffix "$(get_localhost_config_suffix)"
+
+}
+
+add_keepalived_nvmesh_dep()
+{
+	systemctl add-wants keepalived.service nvmeshclient
+	
+	if [ $? -ne 0 ]; then
+		echo
+		echo "ERROR: Unable to add keepalived dependency on nvmeshclient."
+		echo
+
+		exit 1
+	fi
+}
+
+check_install_on_host_b()
+{
+	ssh $HOSTNAME_HOST_B "if [ ! -e $CONF_TOOL_PATH ]; then exit 1; fi"
+
+		if [ $? -ne 0 ]; then
+			echo
+			echo "ERROR: Validating config tool install on HOST_B ($HOSTNAME_HOST_B) failed."
+			echo
+			echo "Please install nvkeep on $HOSTNAME_HOST_B and then come back and"
+			echo "run $(basename $0) again on $HOSTNAME_HOST_A".
+			
+			exit 1
+		fi
+}
+
+copy_config_to_host_b()
+{
+	for i in "$CONF_PATH" "$FSTAB_PATH"; do
+		echo "* Copying $i..."
+		scp "$i" "${HOSTNAME_HOST_B}:$i"
+
+		if [ $? -ne 0 ]; then
+			echo
+			echo "ERROR: Copy failed."
+			echo
+			
+			exit 1
+		fi
+	done
+}
+
+apply_config_to_host_b()
+{
+	echo
+	echo "[[ HOST_B START ]]"
+	
+	ssh $HOSTNAME_HOST_B "THIS_IS_HOST_B=1 $CONF_TOOL_PATH"
+	
+	echo "[[ HOST_B END ]]"
+	echo
+	
+		if [ $? -ne 0 ]; then
+			echo
+			echo "ERROR: Applying configuration to HOST_B ($HOSTNAME_HOST_B) failed."
+			echo
+			
+			exit 1
+		fi
+}
+
+# Swap prios for HOST_B, because in contrast to HOST_A, it has low prio for HOST_A services and
+# high prio for HOST_B services.
+switch_keepalived_prios()
+{
+	local TMP="$HOST_A_SERVICE_PRIO"
+	HOST_A_SERVICE_PRIO="$HOST_B_SERVICE_PRIO"
+	HOST_B_SERVICE_PRIO="$TMP"
+}
+
+
+############# END OF FUNCTION DEFINITIONS ##############
+
+
+parse_args "$@"
+
+# Print headline only on HOST_A
+if [ "$THIS_IS_HOST_B" != "1" ]; then
+	echo "Apply Nvkeep Service Config Tool"
+	echo
+fi
+
+echo "* Loading config... ($CONF_PATH)"
+load_config_file
+
+echo "* Checking config values defined..."
+check_config_defined
+
+echo "* Loading shared lib... ($SHARED_LIB_PATH)"
+load_shared_lib
+
+echo "* Setting config for current host..."
+LOCAL_HOST_SUFFIX="$(get_localhost_config_suffix)" || exit 1
+set_config_by_host_suffix "$LOCAL_HOST_SUFFIX"
+
+
+if [ "$THIS_IS_HOST_B" = "1" ]; then
+	echo "* Running $(basename $0) on HOST_B now..."
+
+	echo "* Checking this tool is called on HOST_B of the group..."
+	check_this_is_host_xy "$HOSTNAME_HOST_B"
+	
+	switch_keepalived_prios
+
+	echo "* Creating keepalived config from template... ($KEEPALIVED_CONF_PATH)"
+	create_keepalived_conf_from_template
+	
+	echo "* Applying nvkeep service config to keepalived config..."
+	apply_nvkeep_conf_to_keepalived_conf
+	
+	echo "* Adding keepalived dependency on nvmeshclient..."
+	add_keepalived_nvmesh_dep
+	
+	echo "* Done on HOST_B."
+	
+	exit 0
+fi
+
+echo "* Checking this tool is called on HOST_A of the group..."
+check_this_is_host_xy "$HOSTNAME_HOST_A"
+
+echo "* Checking keepalived static IP/interface defined..."
+check_static_ip_defined
+
+echo "* Checking fstab file exists... ($FSTAB_PATH)"
+check_fstab_exists
+
+echo "* Checking fstab entries defined..."
+check_fstab_defined
+
+echo "* Creating keepalived config from template... ($KEEPALIVED_CONF_PATH)"
+create_keepalived_conf_from_template
+
+echo "* Applying nvkeep service config to keepalived config..."
+apply_nvkeep_conf_to_keepalived_conf
+
+echo "* Adding keepalived dependency on nvmeshclient..."
+add_keepalived_nvmesh_dep
+
+echo "* Checking install on HOST_B... ($HOSTNAME_HOST_B)"
+check_install_on_host_b
+
+echo "* Copying config to HOST_B via scp... ($HOSTNAME_HOST_B)"
+copy_config_to_host_b
+
+echo "* Applying config to HOST_B via ssh..."
+apply_config_to_host_b
+
+echo
+echo "All done."
+echo
+echo "NEXT STEP:"
+echo "Run \"systemctl restart keepalived\" on this host, check that it successfully"
+echo "started (via \"systemctl status\") and that your services on this host come"
+echo "up (via \"nvkeep_check_status\"). If they do, then start keepalived also on" 
+echo "HOST_B ($HOSTNAME_HOST_B). Log files are in /var/log/nvkeep."

@@ -1,0 +1,146 @@
+#!/bin/bash
+#
+# Perform a clean shutdown of the HA services, mountpoints etc on this host.
+
+SHARED_LIB_PATH="/usr/libexec/nvkeep/shared_lib"
+
+LOCALHOST_SERVICES_ONLY=0 # Set to 1 through user option to stop only localhost preferred services
+PEERHOST_SERVICES_ONLY=0 # Set to 1 through user option to stop only peer host preferred services
+EXIT_CODE=0 # In case error should be returned at the end, but not by aborting immediately
+
+# Print usage info and exit
+usage()
+{
+	echo "Nvkeep Clean Service Shutdown."
+	echo
+	echo "About: Performs a clean shutdown of the running services on this host in the"
+	echo "following order:"
+	echo
+	echo "1) Stop configured services."
+	echo "2) Unmount file systems."
+	echo "3) Stop keepalived."
+	echo "4) Remove floating IP addresses."
+	echo "5) Detach NVMesh volumes."
+	echo
+	echo "To resume normal operation later, simply restart the keepalived service or"
+	echo "use nvkeep_manual_startup."
+	echo
+	echo "Optional Arguments:"
+	echo " -l    Stop only services that run preferably on localhost, not any services"
+	echo "       from the peer host that might currently be running on localhost. (This"
+	echo "       will not stop keepalived.)"
+	echo " -p    Stop only services on localhost that run preferably on peer host, not"
+	echo "       any services that run preferably on localhost. (This will not stop"
+	echo "       keepalived.)"
+	echo
+	echo "Usage:"
+	echo "  $ $0"
+	echo
+
+	exit 1
+}
+
+# Parse command line arguments and set defaults
+parse_args()
+{
+	local OPTIND # local to prevent effects from other subscripts
+
+	while getopts ":hlp" opt; do
+		case "${opt}" in
+		h)
+			# User requested help
+			usage
+			;;
+		l)
+			# Stop only localhost preferred services
+			LOCALHOST_SERVICES_ONLY=1
+			;;
+		p)
+			# Stop only localhost preferred services
+			PEERHOST_SERVICES_ONLY=1
+			;;
+		*)
+			# Other option arguments are invalid
+			usage
+			;;
+		esac
+	done
+
+	shift $((OPTIND-1))
+}
+
+parse_args "$@"
+
+echo "Nvkeep Clean Service Shutdown"
+echo
+
+# Load shared lib
+. "$SHARED_LIB_PATH"
+
+if [ $? -ne 0 ]; then
+	echo "ERROR: Failed to load shared library. Aborting. Shared lib path: $SHARED_LIB_PATH" >&2
+	exit 1;
+fi
+
+load_config
+
+LOCALHOST_SUFFIX="$(get_localhost_config_suffix)"
+PEERHOST_SUFFIX="$(get_peer_config_suffix)"
+
+
+if [ "$PEERHOST_SERVICES_ONLY" -eq 0 ]; then
+	set_config_by_host_suffix "$LOCALHOST_SUFFIX"
+
+	echo "* Stopping localhost preferred services..."
+	stop_services || EXIT_CODE=1
+
+	echo "* Unmounting localhost preferred file systems..."
+	umount_filesystems || EXIT_CODE=1
+fi
+
+if [ "$LOCALHOST_SERVICES_ONLY" -eq 0 ]; then
+	set_config_by_host_suffix "$PEERHOST_SUFFIX"
+
+	echo "* Stopping peer host preferred services..."
+	stop_services || EXIT_CODE=1
+
+	echo "* Unmounting peer host preferred file systems..."
+	umount_filesystems || EXIT_CODE=1
+fi
+
+if [ "$LOCALHOST_SERVICES_ONLY" -eq 0 ] && [ "$PEERHOST_SERVICES_ONLY" -eq 0 ]; then
+	echo "* Stopping keepalived..."
+	systemctl stop keepalived || EXIT_CODE=1
+else
+	echo "* Not stopping keepalived."
+fi
+
+if [ "$PEERHOST_SERVICES_ONLY" -eq 0 ]; then
+	set_config_by_host_suffix "$LOCALHOST_SUFFIX"
+
+	echo "* Removing localhost preferred floating IP addresses..."
+	del_floating_ips || EXIT_CODE=1
+
+	echo "* Detaching localhost preferred NVMesh volumes..."
+	detach_volumes || EXIT_CODE=1
+fi
+
+if [ "$LOCALHOST_SERVICES_ONLY" -eq 0 ]; then
+	set_config_by_host_suffix "$PEERHOST_SUFFIX"
+
+	echo "* Removing peer host preferred floating IP addresses..."
+	del_floating_ips || EXIT_CODE=1
+
+	echo "* Detaching peer host preferred NVMesh volumes..."
+	detach_volumes || EXIT_CODE=1
+fi
+
+echo
+
+if [ "$EXIT_CODE" -eq 0 ]; then
+	echo "All done."
+else
+	echo "All done, but errors were encountered."
+fi
+
+exit $EXIT_CODE

@@ -1,0 +1,119 @@
+#!/bin/bash
+#
+# Perform a clean shutdown of the HA services, mountpoints etc on this host.
+
+SHARED_LIB_PATH="/usr/libexec/nvkeep/shared_lib"
+
+LOCALHOST_SERVICES_START=0 # Set to 1 through user option to start localhost preferred services
+PEERHOST_SERVICES_START=0 # Set to 1 through user option to start peer host preferred services
+EXIT_CODE=0 # In case error should be returned at the end, but not by aborting immediately
+
+# Print usage info and exit
+usage()
+{
+	echo "Nvkeep Manual Service Startup."
+	echo
+	echo "About: Performs a manual service startup on localhost. This is useful to start"
+	echo "services again after nvkeep_clean_shutdown has been used without stopping"
+	echo "keepalived or to manually control the setup without keepalived running."
+	echo
+	echo "Arguments:"
+	echo " -l    Start services that run preferably on localhost."
+	echo " -p    Start services that run preferably on peer host."
+	echo
+	echo "Usage:"
+	echo "  $ $0 -l"
+	echo
+
+	exit 1
+}
+
+# Parse command line arguments and set defaults
+parse_args()
+{
+	local OPTIND # local to prevent effects from other subscripts
+
+	while getopts ":hlp" opt; do
+		case "${opt}" in
+		h)
+			# User requested help
+			usage
+			;;
+		l)
+			# Stop only localhost preferred services
+			LOCALHOST_SERVICES_START=1
+			;;
+		p)
+			# Stop only localhost preferred services
+			PEERHOST_SERVICES_START=1
+			;;
+		*)
+			# Other option arguments are invalid
+			usage
+			;;
+		esac
+	done
+
+	shift $((OPTIND-1))
+}
+
+parse_args "$@"
+
+echo "Nvkeep Manual Service Startup"
+echo
+
+# Load shared lib
+. "$SHARED_LIB_PATH"
+
+if [ $? -ne 0 ]; then
+	echo "ERROR: Failed to load shared library. Aborting. Shared lib path: $SHARED_LIB_PATH" >&2
+	exit 1;
+fi
+
+load_config
+
+LOCALHOST_SUFFIX="$(get_localhost_config_suffix)"
+PEERHOST_SUFFIX="$(get_peer_config_suffix)"
+
+if [ "$LOCALHOST_SERVICES_START" -eq 1 ]; then
+	set_config_by_host_suffix "$LOCALHOST_SUFFIX"
+
+	echo "* Attaching localhost preferred NVMesh volumes..."
+	attach_volumes || EXIT_CODE=1
+
+	echo "* Mounting localhost preferred file systems..."
+	mount_filesystems || EXIT_CODE=1
+
+	echo "* Adding localhost preferred floating IP addresses..."
+	add_floating_ips || EXIT_CODE=1
+
+	echo "* Starting localhost preferred services..."
+	start_services || EXIT_CODE=1
+fi
+
+if [ "$PEERHOST_SERVICES_START" -eq 1 ]; then
+	set_config_by_host_suffix "$PEERHOST_SUFFIX"
+
+	echo "* Attaching peer host preferred NVMesh volumes..."
+	attach_volumes || EXIT_CODE=1
+
+	echo "* Mounting peer host preferred file systems..."
+	mount_filesystems || EXIT_CODE=1
+
+	echo "* Adding peer host preferred floating IP addresses..."
+	add_floating_ips || EXIT_CODE=1
+
+	echo "* Starting peer host preferred services..."
+	start_services || EXIT_CODE=1
+fi
+
+
+echo
+
+if [ "$EXIT_CODE" -eq 0 ]; then
+	echo "All done."
+else
+	echo "All done, but errors were encountered."
+fi
+
+exit $EXIT_CODE

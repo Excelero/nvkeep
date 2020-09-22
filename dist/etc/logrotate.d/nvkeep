@@ -1,0 +1,9 @@
+/var/log/nvkeep/*
+{
+    missingok
+    notifempty
+    monthly
+    create 0664 root root
+    rotate 3
+}
+

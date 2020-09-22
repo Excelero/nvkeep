@@ -1,0 +1,9 @@
+# This is the fstab for the NVMesh High Availability Services.
+# It contains entries for the file system mountpoints that this host owns when
+# all servers are up and running and also the file systems that this host owns
+# in case of service failiver from another host.
+# Format: The format is the same as in the normal /etc/fstab:
+# [Device] [MountPoint] [FileSystemType] [MountOptions] [Dump (0)] [Pass (0)]
+# Example:
+# /dev/nvmesh/myvolume  /mnt/myfilesystem  xfs  defaults  0  0
+
