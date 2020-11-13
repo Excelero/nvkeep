@@ -218,7 +218,7 @@ check_floating_ips()
 	local RETVAL=0
 
 	for (( i=0; i < ${#FLOATING_INTERFACES[@]}; i++ )); do
-		if ip -br a | grep "${FLOATING_INTERFACES[$i]}.*${FLOATING_IPADDRS[$i]}" >/dev/null; then
+		if ip -br a | grep "${FLOATING_INTERFACES[$i]//:*}.*${FLOATING_IPADDRS[$i]}" >/dev/null; then
 			echo "[OK] FLOATING IP: ${FLOATING_INTERFACES[$i]} ${FLOATING_IPADDRS[$i]}"
 		else
 			echo "[NOT OK] FLOATING IP: ${FLOATING_INTERFACES[$i]} ${FLOATING_IPADDRS[$i]}"
@@ -234,7 +234,7 @@ add_floating_ips()
 	for (( i=0; i < ${#FLOATING_INTERFACES[@]}; i++ )); do
 		if ! ip -br a | grep "${FLOATING_INTERFACES[$i]}.*${FLOATING_IPADDRS[$i]}" >/dev/null; then
 			# IP addr is not set yet, try to add it
-			ip addr add ${FLOATING_IPADDRS[$i]} dev ${FLOATING_INTERFACES[$i]}
+			ip addr add ${FLOATING_IPADDRS[$i]} dev ${FLOATING_INTERFACES[$i]//:*} label ${FLOATING_INTERFACES[$i]}
 
 			if [ $? -ne 0 ]; then
 				echo "$(date): Adding floating IP address failed. Aborting." \
@@ -252,9 +252,9 @@ del_floating_ips()
 	local RETVAL=0
 
 	for (( i=0; i < ${#FLOATING_INTERFACES[@]}; i++ )); do
-		if ip -br a | grep "${FLOATING_INTERFACES[$i]}.*${FLOATING_IPADDRS[$i]}" >/dev/null; then
+		if ip -br a | grep "${FLOATING_INTERFACES[$i]//:*}.*${FLOATING_IPADDRS[$i]}" >/dev/null; then
 			# IP addr is set, try to delete it
-			ip addr del ${FLOATING_IPADDRS[$i]} dev ${FLOATING_INTERFACES[$i]} 2>/dev/null
+			ip addr del ${FLOATING_IPADDRS[$i]} dev ${FLOATING_INTERFACES[$i]//:*} label ${FLOATING_INTERFACES[$i]} 2>/dev/null
 			
 			if [ $? -ne 0 ]; then
 				echo "$(date): Removing floating IP address failed:" \
