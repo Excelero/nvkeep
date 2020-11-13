@@ -241,7 +241,7 @@ apply_nvkeep_conf_to_keepalived_conf()
 
 add_keepalived_nvmesh_dep()
 {
-	systemctl add-wants keepalived.service nvmeshclient
+	systemctl add-requires keepalived.service nvkeep-dependency
 	
 	if [ $? -ne 0 ]; then
 		echo

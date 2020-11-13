@@ -20,6 +20,7 @@ rm -rf %{buildroot}
 
 %files
 /usr/bin/*
+/usr/lib/systemd/system/*
 /usr/libexec/*
 /usr/sbin/*
 /etc/*

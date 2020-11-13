@@ -6,6 +6,14 @@
 # Note on vrrp_instance names: The fifo event handler removes the prefix "nvkeep_inst" and uses
 # the remainder to load the correct configuration for this service.
 
+vrrp_script nvkeep_checknet_script
+{
+    script    "/usr/libexec/nvkeep/check_connectivity"
+    interval  2  # check script result every 2 sec
+    fall      5  # require 5 failures for FAULT
+    rise      5  # require 5 successes for OK
+    init_fail    # initially assume fault state
+}
 
 # For services that run preferably on HOST_A
 vrrp_instance nvkeep_inst_HOST_A
@@ -53,11 +61,3 @@ global_defs
     vrrp_notify_fifo_script /usr/libexec/nvkeep/vrrp_notify_fifo
 }
 
-vrrp_script nvkeep_checknet_script
-{
-    script    "/usr/libexec/nvkeep/check_connectivity"
-    interval  2  # check script result every 2 sec
-    fall      5  # require 5 failures for FAULT
-    rise      5  # require 5 successes for OK
-    init_fail    # initially assume fault state
-}

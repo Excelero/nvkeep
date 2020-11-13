@@ -100,7 +100,7 @@ check_volumes()
 {
 	local RETVAL=0
 
-	EXISTING_VOLS=($(find /proc/nvmeibc/volumes/ -mindepth 1 -maxdepth 1 -type d -printf '%f\n') )
+	EXISTING_VOLS=($(find /proc/nvmeibc/volumes/ -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) )
 
 	for (( i=0; i < ${#NVMESHVOLS[@]}; i++ )); do
 		IS_ATTACHED="$(echo "${EXISTING_VOLS[@]}" | grep ${NVMESHVOLS[$i]})"

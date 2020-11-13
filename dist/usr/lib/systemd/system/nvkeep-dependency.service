@@ -1,0 +1,21 @@
+# This exists to ensure that keepalived cannot be started before the NVMesh
+# client is ready. It's done in this separate systemd service to avoid the need
+# to modify the original systemd service files of nvmeshclient or keepalived
+# and to avoid the need for a custom service override file that might already
+# be defined on a system and would need to be merged by an automatic installer.
+
+[Unit]
+Description=NVKeep Dependency Connector
+Before=keepalived.service
+After=nvmeshclient.service
+Requires=nvmeshclient.service
+BindsTo=nvmeshclient.service
+
+[Service]
+ExecStart=/bin/true
+ExecStop=/bin/true
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+RequiredBy=keepalived.service
